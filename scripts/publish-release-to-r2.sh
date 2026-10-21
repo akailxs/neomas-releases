@@ -14,13 +14,28 @@ export TAG VERSION
 
 node scripts/validate-release-assets.mjs "$TAG"
 
+# R2 refuse les sommes de contrôle CRC que les AWS CLI récents calculent par
+# défaut (CompleteMultipartUpload → InvalidPart, vu le 2026-10-21 sur deux runs
+# de suite, à des fichiers différents). Les variables ci-dessous ramènent la CLI
+# au comportement d'avant ; `aws s3 cp` reste multipart (pas de limite de taille).
+export AWS_REQUEST_CHECKSUM_CALCULATION=when_required
+export AWS_RESPONSE_CHECKSUM_VALIDATION=when_required
+
 put_object() {
   local key="$1"
   local file="$2"
-  echo "Upload $key"
-  aws s3 cp "$file" "s3://$BUCKET/$key" \
-    --endpoint-url "$ENDPOINT" \
-    --only-show-errors
+  local attempt
+  for attempt in 1 2 3; do
+    echo "Upload $key${attempt:+ (essai $attempt)}"
+    if aws s3 cp "$file" "s3://$BUCKET/$key" \
+      --endpoint-url "$ENDPOINT" \
+      --only-show-errors; then
+      return 0
+    fi
+    sleep $((attempt * 10))
+  done
+  echo "Upload $key : échec après 3 essais" >&2
+  return 1
 }
 
 echo "Publication atomique de $TAG vers R2/$BUCKET"
