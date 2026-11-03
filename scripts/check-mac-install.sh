@@ -73,6 +73,25 @@ spctl_assess() {
   return "$rc"
 }
 
+stapler_validate() {
+  # `stapler validate` interroge le service de tickets d'Apple (CloudKit). Une coupure
+  # réseau du runner (NSURLErrorDomain, exit 68) n'est pas un défaut de l'app : on
+  # retente dans ce seul cas. Un ticket absent ou invalide échoue sans erreur réseau
+  # et reste donc bloquant dès le premier essai.
+  local app="$1" out rc attempt
+  for attempt in 1 2 3 4; do
+    out="$(xcrun stapler validate "$app" 2>&1)"
+    rc=$?
+    printf '%s\n' "$out"
+    if [ "$rc" -eq 0 ] || ! printf '%s' "$out" | grep -q 'NSURLErrorDomain'; then
+      return "$rc"
+    fi
+    echo "stapler : erreur réseau vers Apple, nouvel essai ($attempt/4) dans $((attempt * 10)) s"
+    sleep $((attempt * 10))
+  done
+  return "$rc"
+}
+
 verify_copy() {
   local label="$1" app="$2"
   echo
@@ -83,7 +102,7 @@ verify_copy() {
   run 1 "[$label] noms sur disque == noms scellés, tous ASCII" python3 -I "$ROOT/scripts/compare-seal-names.py" "$app"
   run 1 "[$label] codesign --verify --deep --strict" codesign --verify --deep --strict --verbose=2 "$app"
   run 1 "[$label] spctl -a -vv" spctl_assess "$app"
-  run 1 "[$label] stapler validate" xcrun stapler validate "$app"
+  run 1 "[$label] stapler validate" stapler_validate "$app"
 }
 
 finder_copy() {
