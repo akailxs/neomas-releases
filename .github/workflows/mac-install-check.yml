@@ -1,0 +1,93 @@
+name: Mac user-like install check
+
+# Vérifie l'app macOS APRÈS une copie « comme un utilisateur » (ditto, NSFileManager,
+# Finder, volume HFS+), pas seulement sur le DMG monté. Appelé par publish-r2.yml :
+# un échec bloque la publication vers R2 (site + mises à jour automatiques).
+
+on:
+  workflow_call:
+    inputs:
+      tag:
+        required: true
+        type: string
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Release à contrôler (vX.Y.Z). Vide = dernière release publiée.
+        required: false
+        type: string
+  pull_request:
+    paths:
+      - scripts/check-mac-install.sh
+      - scripts/compare-seal-names.py
+      - .github/workflows/mac-install-check.yml
+      - .github/workflows/publish-r2.yml
+
+permissions:
+  contents: read
+
+jobs:
+  install-check:
+    runs-on: macos-15
+    timeout-minutes: 40
+    env:
+      GH_TOKEN: ${{ github.token }}
+      INPUT_TAG: ${{ inputs.tag }}
+      R2_PUBLIC_BASE_URL: ${{ vars.R2_PUBLIC_BASE_URL }}
+      EVENT_NAME: ${{ github.event_name }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Resolve tag
+        run: |
+          tag="${INPUT_TAG:-}"
+          if [ -z "$tag" ]; then
+            tag="$(gh release view --repo "$GITHUB_REPOSITORY" --json tagName --jq .tagName)"
+          fi
+          echo "TAG=$tag" >> "$GITHUB_ENV"
+          echo "Release contrôlée : $tag"
+
+      - name: Download macOS DMGs from the frozen GitHub release
+        run: |
+          mkdir -p dmgs
+          if ! gh release download "$TAG" --repo "$GITHUB_REPOSITORY" --pattern '*.dmg' --dir dmgs; then
+            echo "Aucun DMG dans $TAG"
+          fi
+          ls -l dmgs
+
+      - name: Public download (stable alias served to users) — compare bytes
+        if: env.EVENT_NAME != 'workflow_call' && env.R2_PUBLIC_BASE_URL != ''
+        run: |
+          mkdir -p public
+          for arch in arm64 x64; do
+            url="$R2_PUBLIC_BASE_URL/updates/latest/Neomas-mac-$arch.dmg"
+            echo "GET $url"
+            curl -fsSL -o "public/Neomas-public-$arch.dmg" "$url" || echo "téléchargement public échoué : $url"
+          done
+          shasum -a 256 public/*.dmg dmgs/*.dmg || true
+
+      - name: Enable Gatekeeper (spctl results are meaningless when it is disabled)
+        run: |
+          spctl --status || true
+          sudo spctl --global-enable 2>/dev/null || sudo spctl --master-enable 2>/dev/null || true
+          spctl --status || true
+
+      - name: User-like install check
+        run: |
+          shopt -s nullglob
+          dmgs=(dmgs/*.dmg)
+          if [ -d public ]; then dmgs=(public/*.dmg "${dmgs[@]}"); fi
+          if [ "${#dmgs[@]}" -eq 0 ]; then
+            echo "Pas de DMG macOS dans $TAG : contrôle sans objet."
+            exit 0
+          fi
+          bash scripts/check-mac-install.sh "${dmgs[@]}" 2>&1 | tee install-check.log
+          exit "${PIPESTATUS[0]}"
+
+      - name: Keep raw log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: mac-install-check-${{ env.TAG }}
+          path: install-check.log
+          if-no-files-found: ignore

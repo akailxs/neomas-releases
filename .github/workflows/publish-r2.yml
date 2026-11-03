@@ -18,7 +18,15 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  # Contrôle obligatoire : l'app macOS doit rester valide APRÈS une copie
+  # « comme un utilisateur ». Sans lui, rien n'est envoyé vers R2.
+  mac-install-check:
+    uses: ./.github/workflows/mac-install-check.yml
+    with:
+      tag: ${{ github.event.release.tag_name || inputs.tag }}
+
   publish:
+    needs: mac-install-check
     runs-on: ubuntu-latest
     timeout-minutes: 45
     env:
